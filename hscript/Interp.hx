@@ -22,23 +22,33 @@
 package hscript;
 import haxe.PosInfos;
 import hscript.Expr;
-import haxe.Constraints.IMap;
+import haxe.Constraints;
 
-private enum Stop {
+enum Stop {
 	SBreak;
 	SContinue;
 	SReturn;
 }
 
-class Interp {
+@:structInit class HScriptLocal {
+	public var r:Dynamic;
+}
 
+@:structInit class HScriptDeclare {
+	public var n:String;
+	public var old:HScriptLocal;
+}
+
+class Interp {
+    public var staticExtensions : Map<String, Function>;
 	public var variables : Map<String,Dynamic>;
-	var locals : Map<String,{ r : Dynamic }>;
+
+	var locals : Map<String, HScriptLocal>;
 	var binops : Map<String, Expr -> Expr -> Dynamic >;
 
 	var depth : Int;
 	var inTry : Bool;
-	var declared : Array<{ n : String, old : { r : Dynamic } }>;
+	var declared : Array<HScriptDeclare>;
 	var returnValue : Dynamic;
 
 	#if hscriptPos
@@ -53,6 +63,8 @@ class Interp {
 	}
 
 	private function resetVariables(){
+        staticExtensions = new Map<String, Function>();
+
 		variables = new Map<String,Dynamic>();
 		variables.set("null",null);
 		variables.set("true",true);
@@ -449,7 +461,7 @@ class Interp {
 				} else {
 					// function-in-function is a local function
 					declared.push( { n : name, old : locals.get(name) } );
-					var ref = { r : f };
+					var ref:HScriptLocal = { r : f };
 					locals.set(name, ref);
 					capturedLocals.set(name, ref); // allow self-recursion
 				}
@@ -540,6 +552,25 @@ class Interp {
 			return val;
 		case EMeta(meta, args, e):
 			return exprMeta(meta, args, e);
+		case EImport(name, rename):
+			if ( rename == null ) rename = name.substring(name.lastIndexOf(".") + 1, name.length);
+
+			var cls : Dynamic = Type.resolveClass(name);
+			if ( cls == null ) cls = Type.resolveEnum(name);
+			if ( cls == null) {
+				error(ECustom("Invalid Import: " + name));
+			}
+
+			variables.set(rename, cls);
+		case EUsing(name):
+			var c = Type.resolveClass(name);
+			if( c == null ) c = resolve(name);
+
+			for (field in Type.getClassFields(c)) {
+				final func:Function = Reflect.getProperty(c, field);
+				if ( Reflect.isFunction(func) )
+					staticExtensions.set(field, func);
+			}
 		case ECheckType(e,_), ECast(e,_):
 			return expr(e);
 		}
@@ -708,7 +739,7 @@ class Interp {
 
 	function get( o : Dynamic, f : String ) : Dynamic {
 		if ( o == null ) error(EInvalidAccess(f));
-		return {
+		var prop = {
 			#if php
 				// https://github.com/HaxeFoundation/haxe/issues/4915
 				try {
@@ -719,7 +750,8 @@ class Interp {
 			#else
 				Reflect.getProperty(o, f);
 			#end
-		}
+		};
+		return prop;
 	}
 
 	function set( o : Dynamic, f : String, v : Dynamic ) : Dynamic {
@@ -729,7 +761,12 @@ class Interp {
 	}
 
 	function fcall( o : Dynamic, f : String, args : Array<Dynamic> ) : Dynamic {
-		return call(o, get(o, f), args);
+	    var func = get(o, f);
+		if ( func == null && staticExtensions.exists(f) ) {
+			func = staticExtensions.get(f);
+			args.insert(0, o);
+		}
+		return call(o, func, args);
 	}
 
 	function call( o : Dynamic, f : Dynamic, args : Array<Dynamic> ) : Dynamic {

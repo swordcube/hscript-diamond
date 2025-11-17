@@ -326,6 +326,16 @@ class Printer {
 			}
 			add(" ");
 			expr(e);
+		case EImport(name, rename):
+			add("import ");
+			add(name);
+			if (rename != null) {
+				add(" as ");
+				add(rename);
+			}
+		case EUsing(name):
+		    add("using ");
+			add(name);
 		case ECheckType(e, t):
 			add("(");
 			expr(e);

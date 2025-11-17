@@ -1,0 +1,10 @@
+{
+    "tab_size": 4,
+    "lsp": {
+        "haxe-language-server": {
+            "initialization_options": {
+                "displayArguments": ["highlight.hxml"]
+            }
+        }
+    }
+}

@@ -1,6 +1,6 @@
 {
-  "name": "hscript",
-  "url": "https://github.com/HaxeFoundation/hscript",
+  "name": "hscript-diamond",
+  "url": "https://github.com/swordcube/hscript-diamond",
   "license": "MIT",
   "description": "Haxe Script is a scripting engine for a subset of the Haxe language",
   "version": "2.6.0",
