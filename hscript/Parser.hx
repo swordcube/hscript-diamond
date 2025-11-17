@@ -648,6 +648,10 @@ class Parser {
 		}
 	}
 
+	var nextIsOverride:Bool = false;
+	var nextIsStatic:Bool = false;
+	var nextIsPublic:Bool = false;
+
 	function parseStructure(id) {
 		#if hscriptPos
 		var p1 = tokenMin;
@@ -672,6 +676,93 @@ class Parser {
 				if( semic ) push(TSemicolon);
 			}
 			mk(EIf(cond,e1,e2),p1,(e2 == null) ? tokenMax : pmax(e2));
+		case "override":
+			nextIsOverride = true;
+			var nextToken = token();
+			switch(nextToken) {
+				case TId("public"):
+					var str = parseStructure("public"); // override public
+					nextIsOverride = false;
+					str;
+				case TId("function"):
+					var str = parseStructure("function"); // override function
+					nextIsOverride = false;
+					str;
+				case TId("static"):
+					var str = parseStructure("static"); // override static
+					nextIsOverride = false;
+					str;
+				case TId("var"):
+					var str = parseStructure("var"); // override var
+					nextIsOverride = false;
+					str;
+				case TId("final"):
+					var str = parseStructure("final"); // override final
+					nextIsOverride = false;
+					str;
+				default:
+					unexpected(nextToken);
+					nextIsOverride = false;
+					null;
+			}
+		case "static":
+			nextIsStatic = true;
+			var nextToken = token();
+			switch(nextToken) {
+				case TId("public"):
+					var str = parseStructure("public"); // static public
+					nextIsStatic = false;
+					str;
+				case TId("function"):
+					var str = parseStructure("function"); // static function
+					nextIsStatic = false;
+					str;
+				case TId("override"):
+					var str = parseStructure("override"); // static override
+					nextIsStatic = false;
+					str;
+				case TId("var"):
+					var str = parseStructure("var"); // static var
+					nextIsStatic = false;
+					str;
+				case TId("final"):
+					var str = parseStructure("final"); // static final
+					nextIsStatic = false;
+					str;
+				default:
+					unexpected(nextToken);
+					nextIsStatic = false;
+					null;
+			}
+		case "public":
+			nextIsPublic = true;
+			var nextToken = token();
+			switch(nextToken) {
+				case TId("static"):
+					var str = parseStructure("static"); // public static
+					nextIsPublic = false;
+					str;
+				case TId("function"):
+					var str = parseStructure("function"); // public function
+					nextIsPublic = false;
+					str;
+				case TId("override"):
+					var str = parseStructure("override"); // public override
+					nextIsPublic = false;
+					str;
+				case TId("var"):
+					var str = parseStructure("var"); // public var
+					nextIsPublic = false;
+					str;
+				case TId("final"):
+					var str = parseStructure("final"); // public final
+					nextIsPublic = false;
+					str;
+				default:
+					unexpected(nextToken);
+					nextIsPublic = false;
+					null;
+			}
 		case "var", "final":
 			var ident = getIdent();
 			var tk = token();
@@ -692,7 +783,7 @@ class Parser {
 				default: unexpected(tk);
 			}
 
-			mk(EVar(ident,t,e),p1,(e == null) ? tokenMax : pmax(e));
+			mk(EVar(ident,t,e,nextIsPublic,nextIsStatic),p1,(e == null) ? tokenMax : pmax(e));
 		case "while":
 			var econd = parseExpr();
 			var e = parseExpr();
@@ -736,7 +827,7 @@ class Parser {
 			default: push(tk);
 			}
 			var inf = parseFunctionDecl();
-			mk(EFunction(inf.args, inf.body, name, inf.ret),p1,pmax(inf.body));
+			mk(EFunction(inf.args, inf.body, name, inf.ret, nextIsPublic, nextIsStatic),p1,pmax(inf.body));
 		case "return":
 			var tk = token();
 			push(tk);

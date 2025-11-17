@@ -32,16 +32,37 @@ enum Stop {
 
 @:structInit class HScriptLocal {
 	public var r:Dynamic;
+	public var depth:Int;
 }
 
 @:structInit class HScriptDeclare {
 	public var n:String;
 	public var old:HScriptLocal;
+	public var depth:Int;
 }
 
 class Interp {
     public var staticExtensions : Map<String, Function>;
-	public var variables : Map<String,Dynamic>;
+    public var variables : Map<String,Dynamic>;
+
+    public var allowPublicVariables: Bool = true;
+    public var allowStaticVariables: Bool = true;
+
+    public var publicVariables : Map<String,Dynamic>;
+	public var staticVariables : Map<String,Dynamic>;
+
+	public var allowImports : Bool = true;
+	public var importBlocklist : Array<String> = [];
+	public var importAliases : Map<String, Dynamic> = [];
+
+	public var scriptParent(default, set): Dynamic = null;
+
+	public function set_scriptParent(v:Dynamic) : Dynamic {
+		__instanceFields = (v == null) ? [] : Type.getInstanceFields(Type.getClass(v));
+		return scriptParent = v;
+	}
+
+	var __instanceFields:Array<String> = [];
 
 	var locals : Map<String, HScriptLocal>;
 	var binops : Map<String, Expr -> Expr -> Dynamic >;
@@ -64,6 +85,9 @@ class Interp {
 
 	private function resetVariables(){
         staticExtensions = new Map<String, Function>();
+
+        publicVariables = new Map<String,Dynamic>();
+        staticVariables = new Map<String,Dynamic>();
 
 		variables = new Map<String,Dynamic>();
 		variables.set("null",null);
@@ -124,7 +148,13 @@ class Interp {
 	}
 
 	function setVar( name : String, v : Dynamic ) {
-		variables.set(name, v);
+    	if (allowStaticVariables && staticVariables.exists(name)) {
+    		staticVariables.set(name, v);
+    	} else if (allowPublicVariables && publicVariables.exists(name)) {
+    		publicVariables.set(name, v);
+    	} else {
+    		variables.set(name, v);
+        }
 		return v;
 	}
 
@@ -132,11 +162,28 @@ class Interp {
 		var v = expr(e2);
 		switch( Tools.expr(e1) ) {
 		case EIdent(id):
-			var l = locals.get(id);
-			if( l == null )
-				setVar(id,v)
-			else
-				l.r = v;
+    		var l = locals.get(id);
+			if (l == null) {
+    			if (!variables.exists(id) && !staticVariables.exists(id) && !publicVariables.exists(id) && scriptParent != null) {
+    				if (Type.typeof(scriptParent) == TObject) {
+    					Reflect.setField(scriptParent, id, v);
+    				} else {
+    					if (__instanceFields.contains(id)) {
+    					    Reflect.setProperty(scriptParent, id, v);
+    					} else if (__instanceFields.contains('set_$id')) { // setter
+    					    Reflect.getProperty(scriptParent, 'set_$id')(v);
+    					} else {
+    					    setVar(id, v);
+    					}
+    				}
+    			} else {
+                    setVar(id, v);
+    			}
+            } else {
+     			l.r = v;
+                if(l.depth == 0)
+                    setVar(id, v);
+			}
 		case EField(e,f):
 			v = set(expr(e),f,v);
 		case EArray(e, index):
@@ -164,10 +211,17 @@ class Interp {
 		var v;
 		switch( Tools.expr(e1) ) {
 		case EIdent(id):
-			var l = locals.get(id);
-			v = fop(expr(e1),expr(e2));
-			if( l == null )
-				setVar(id,v)
+		    var l = locals.get(id);
+			v = fop(expr(e1), expr(e2));
+			if (l == null) {
+				if (__instanceFields.contains(id)) {
+					Reflect.setProperty(scriptParent, id, v);
+				} else if (__instanceFields.contains('set_$id')) { // setter
+					Reflect.getProperty(scriptParent, 'set_$id')(v);
+				} else {
+					setVar(id, v);
+				}
+			}
 			else
 				l.r = v;
 		case EField(e,f):
@@ -294,9 +348,34 @@ class Interp {
 		#end
 	}
 
-	function resolve( id : String ) : Dynamic {
+	function resolve( id : String, doException: Bool = true ) : Dynamic {
+	    if (id == null)
+			return null;
+		id = StringTools.trim(id);
+		var l = locals.get(id);
+		if (l != null)
+			return l.r;
+
 		var v = variables.get(id);
-		if( v == null && !variables.exists(id) )
+		for(map in [variables, publicVariables, staticVariables])
+			if (map.exists(id))
+				return map[id];
+
+		if (scriptParent != null) {
+			// search in object
+			if (id == "this") {
+				return scriptParent;
+			} else if ((Type.typeof(scriptParent) == TObject) && Reflect.hasField(scriptParent, id)) {
+				return Reflect.field(scriptParent, id);
+			} else {
+				if (__instanceFields.contains(id)) {
+					return Reflect.getProperty(scriptParent, id);
+				} else if (__instanceFields.contains('get_$id')) { // getter
+					return Reflect.getProperty(scriptParent, 'get_$id')();
+				}
+			}
+		}
+		if (doException)
 			error(EUnknownVariable(id));
 		return v;
 	}
@@ -318,9 +397,18 @@ class Interp {
 			if( l != null )
 				return l.r;
 			return resolve(id);
-		case EVar(n,_,e):
-			declared.push({ n : n, old : locals.get(n) });
-			locals.set(n,{ r : (e == null)?null:expr(e) });
+		case EVar(n,_,e,isPublic,isStatic):
+		    declared.push({n: n, old: locals.get(n), depth: depth});
+			locals.set(n, {r: (e == null) ? null : expr(e), depth: depth});
+			if (depth == 0) {
+				if(isStatic == true) {
+					if(!staticVariables.exists(n)) {
+						staticVariables.set(n, locals[n].r);
+					}
+					return null;
+				}
+				(isPublic ? publicVariables : variables).set(n, locals[n].r);
+			}
 			return null;
 		case EParent(e):
 			return expr(e);
@@ -395,29 +483,37 @@ class Interp {
 		case EReturn(e):
 			returnValue = e == null ? null : expr(e);
 			throw SReturn;
-		case EFunction(params,fexpr,name,_):
-			var capturedLocals = duplicate(locals);
+		case EFunction(params,fexpr,name,_,isPublic,isStatic,isOverride):
+		    var __capturedLocals = duplicate(locals);
+			var capturedLocals:Map<String, HScriptLocal> = [];
+			for(k=>e in __capturedLocals)
+				if (e != null && e.depth > 0)
+					capturedLocals.set(k, e);
+
 			var me = this;
 			var hasOpt = false, minParams = 0;
-			for( p in params )
-				if( p.opt )
+			for (p in params)
+				if (p.opt)
 					hasOpt = true;
 				else
 					minParams++;
 			var f = function(args:Array<Dynamic>) {
-				if( ( (args == null) ? 0 : args.length ) != params.length ) {
-					if( args.length < minParams ) {
+				if (me.locals == null || me.variables == null) return null;
+
+				if (((args == null) ? 0 : args.length) != params.length) {
+					if (args.length < minParams) {
 						var str = "Invalid number of parameters. Got " + args.length + ", required " + minParams;
-						if( name != null ) str += " for function '" + name+"'";
+						if (name != null)
+							str += " for function '" + name + "'";
 						error(ECustom(str));
 					}
 					// make sure mandatory args are forced
 					var args2 = [];
 					var extraParams = args.length - minParams;
 					var pos = 0;
-					for( p in params )
-						if( p.opt ) {
-							if( extraParams > 0 ) {
+					for (p in params)
+						if (p.opt) {
+							if (extraParams > 0) {
 								args2.push(args[pos++]);
 								extraParams--;
 							} else
@@ -429,15 +525,14 @@ class Interp {
 				var old = me.locals, depth = me.depth;
 				me.depth++;
 				me.locals = me.duplicate(capturedLocals);
-				for( i in 0...params.length )
-					me.locals.set(params[i].name,{ r : args[i] });
+				for (i in 0...params.length)
+					me.locals.set(params[i].name, {r: args[i], depth: depth});
 				var r = null;
 				var oldDecl = declared.length;
-				if( inTry )
+				if (inTry)
 					try {
 						r = me.exprReturn(fexpr);
-					} catch( e : Dynamic ) {
-						restore(oldDecl);
+					} catch (e:Dynamic) {
 						me.locals = old;
 						me.depth = depth;
 						#if neko
@@ -454,14 +549,14 @@ class Interp {
 				return r;
 			};
 			var f = Reflect.makeVarArgs(f);
-			if( name != null ) {
-				if( depth == 0 ) {
+			if (name != null) {
+				if (depth == 0) {
 					// global function
-					variables.set(name, f);
+					((isStatic && allowStaticVariables) ? staticVariables : ((isPublic && allowPublicVariables) ? publicVariables : variables)).set(name, f);
 				} else {
 					// function-in-function is a local function
-					declared.push( { n : name, old : locals.get(name) } );
-					var ref:HScriptLocal = { r : f };
+					declared.push({n: name, old: locals.get(name), depth: depth});
+					var ref: HScriptLocal = {r: f, depth: depth};
 					locals.set(name, ref);
 					capturedLocals.set(name, ref); // allow self-recursion
 				}
@@ -520,8 +615,8 @@ class Interp {
 				restore(old);
 				inTry = oldTry;
 				// declare 'v'
-				declared.push({ n : n, old : locals.get(n) });
-				locals.set(n,{ r : err });
+				declared.push({ n : n, old : locals.get(n), depth: depth });
+				locals.set(n,{ r : err, depth: depth });
 				var v : Dynamic = expr(ecatch);
 				restore(old);
 				return v;
@@ -553,9 +648,12 @@ class Interp {
 		case EMeta(meta, args, e):
 			return exprMeta(meta, args, e);
 		case EImport(name, rename):
+		    if ( !allowImports ) error(ECustom("Imports aren't allowed!"));
+			if ( importBlocklist.contains(name) ) error(ECustom('${name} has been blocked from being imported!'));
+
 			if ( rename == null ) rename = name.substring(name.lastIndexOf(".") + 1, name.length);
 
-			var cls : Dynamic = Type.resolveClass(name);
+			var cls : Dynamic = importAliases.get(name) ?? Type.resolveClass(name);
 			if ( cls == null ) cls = Type.resolveEnum(name);
 			if ( cls == null) {
 				error(ECustom("Invalid Import: " + name));
@@ -629,10 +727,10 @@ class Interp {
 
 	function forLoop(n,it,e) {
 		var old = declared.length;
-		declared.push({ n : n, old : locals.get(n) });
+		declared.push({ n : n, old : locals.get(n), depth: depth });
 		var it = makeIterator(expr(it));
 		while( it.hasNext() ) {
-			locals.set(n,{ r : it.next() });
+			locals.set(n,{ r : it.next(), depth: depth });
 			if( !loopRun(() -> expr(e)) )
 				break;
 		}
@@ -641,13 +739,13 @@ class Interp {
 
 	function forKeyValueLoop(vk,vv,it,e) {
 		var old = declared.length;
-		declared.push({ n : vk, old : locals.get(vk) });
-		declared.push({ n : vv, old : locals.get(vv) });
+		declared.push({ n : vk, old : locals.get(vk), depth: depth });
+		declared.push({ n : vv, old : locals.get(vv), depth: depth });
 		var it = makeKeyValueIterator(expr(it));
 		while( it.hasNext() ) {
 			var v = it.next();
-			locals.set(vk,{ r : v.key });
-			locals.set(vv,{ r : v.value });
+			locals.set(vk,{ r : v.key, depth: depth });
+			locals.set(vv,{ r : v.value, depth: depth });
 			if( !loopRun(() -> expr(e)) )
 				break;
 		}
