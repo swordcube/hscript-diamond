@@ -33,6 +33,7 @@ enum Token {
 	TBrClose;
 	TDot;
 	TQuestionDot;
+	TQuestionDouble;
 	TComma;
 	TSemicolon;
 	TBkOpen;
@@ -114,6 +115,7 @@ class Parser {
 			["+", "-"],
 			["<<", ">>", ">>>"],
 			["|", "&", "^"],
+			["??"],
 			["==", "!=", ">", "<", ">=", "<="],
 			["..."],
 			["&&"],
@@ -124,11 +126,13 @@ class Parser {
 		];
 		opPriority = new Map();
 		opRightAssoc = new Map();
-		for( i in 0...priorities.length )
+		for( i in 0...priorities.length ) {
+			var isEq = priorities[i][0] == "=";
 			for( x in priorities[i] ) {
 				opPriority.set(x, i);
-				if( i == 9 ) opRightAssoc.set(x, true);
+				if( isEq ) opRightAssoc.set(x, true);
 			}
+		}
 		for( x in ["!", "++", "--", "~"] ) // unary "-" handled in parser directly!
 			opPriority.set(x, x == "++" || x == "--" ? -1 : -2);
 	}
@@ -145,7 +149,8 @@ class Parser {
 	}
 
 	public function invalidChar(c) {
-		error(EInvalidChar(c), readPos-1, readPos-1);
+		var pos = currentPos - 1;
+		error(EInvalidChar(c), pos, pos);
 	}
 
 	function initParser( origin, pos ) {
@@ -453,24 +458,45 @@ class Parser {
 				if( #if hscriptPos tokens.length != 0 #else !tokens.isEmpty() #end )
 					throw "assert";
 				if( readPos == start + ident.length + 1 ) {
+					var startTag = "<"+ident;
 					var endTag = "</"+ident+">";
-					var end = input.indexOf(endTag, readPos);
-					if( end < 0 ) {
-						endTag = '/>';
-						end = input.indexOf(endTag, readPos);
+					var endTag2 = "/>";
+					var end = -1;
+					var count = 1, curPos = readPos;
+					var r_nextTag = ~/<[A-Za-z0-9_]+/;
+					while( count > 0 ) {
+						end = input.indexOf(endTag, curPos + 1);
+						if( end >= 0 )
+							end += endTag.length;
+						var end2 = input.indexOf(endTag2, curPos + 1);
+						if( end2 > 0 && (end < 0 || end2 < end) ) {
+							var nextTag = -1;
+							if( r_nextTag.matchSub(input, curPos+1) )
+								nextTag = r_nextTag.matchedPos().pos;
+							if( nextTag < 0 || end2 < nextTag )
+								end = end2 + endTag2.length;
+						}
+						if( end < 0 )
+							error(ECustom("Unclosed "+startTag+">"), curPos, curPos + startTag.length + 1);
+						var prev = input.indexOf(startTag, curPos + 1);
+						if( prev < 0 || prev > end ) {
+							count--;
+							curPos = end - 1;
+						} else {
+							count++;
+							curPos = prev;
+						}
 					}
-					if( end >= 0 ) {
-						readPos = end + endTag.length;
-						char = -1;
-						start--;
-						var end = readPos - 1;
-						#if hscriptPos
-						tokenMin = start + offset;
-						tokenMax = end + offset;
-						#end
-						var str = input.substr(start,end - start + 1);
-						return mk(EMeta(":markup",[],mk(EConst(CString(str)))));
-					}
+					readPos = end;
+					char = -1;
+					start--;
+					var end = readPos - 1;
+					#if hscriptPos
+					tokenMin = start + offset;
+					tokenMax = end + offset;
+					#end
+					var str = input.substr(start,end - start + 1);
+					return mk(EMeta(":markup",[],mk(EConst(CString(str)))));
 				}
 			}
 			return unexpected(tk);
@@ -1031,17 +1057,18 @@ class Parser {
 			var field = getIdent();
 			return parseExprNext(mk(EField(e1,field),pmin(e1)));
 		case TQuestionDot:
-			var field = getIdent();
 			var tmp = "__a_" + (uid++);
+			push(TDot);
+			var e2 = parseExprNext(mk(EIdent(tmp),pmin(e1),pmax(e1)));
 			var e = mk(EBlock([
 				mk(EVar(tmp, null, e1), pmin(e1), pmax(e1)),
 				mk(ETernary(
 					mk(EBinop("==", mk(EIdent(tmp),pmin(e1),pmax(e1)), mk(EIdent("null"),pmin(e1),pmax(e1)))),
 					mk(EIdent("null"),pmin(e1),pmax(e1)),
-					mk(EField(mk(EIdent(tmp),pmin(e1),pmax(e1)),field),pmin(e1))
+					e2
 				))
 			]),pmin(e1));
-			return parseExprNext(e);
+			return e;
 		case TPOpen:
 			return parseExprNext(mk(ECall(e1,parseExprList(TPClose)),pmin(e1)));
 		case TBkOpen:
@@ -1053,6 +1080,9 @@ class Parser {
 			ensure(TDoubleDot);
 			var e3 = parseExpr();
 			return mk(ETernary(e1,e2,e3),pmin(e1),pmax(e3));
+		case TQuestionDouble:
+			var e2 = parseExpr();
+			return makeBinop("??",e1,e2);
 		default:
 			push(tk);
 			return e1;
@@ -1831,6 +1861,8 @@ class Parser {
 				char = readChar();
 				if( char == ".".code )
 					return TQuestionDot;
+				if( char == "?".code )
+					return TQuestionDouble;
 				this.char = char;
 				return TQuestion;
 			case ":".code: return TDoubleDot;
@@ -1855,6 +1887,7 @@ class Parser {
 						id += String.fromCharCode(char);
 					}
 				}
+				readPos--;
 				invalidChar(char);
 			case '#'.code:
 				char = readChar();
@@ -1869,6 +1902,7 @@ class Parser {
 						id += String.fromCharCode(char);
 					}
 				}
+				readPos--;
 				invalidChar(char);
 			default:
 				if( ops[char] ) {
@@ -2058,6 +2092,7 @@ class Parser {
     		case TBrClose: "}";
     		case TDot: ".";
     		case TQuestionDot: "?.";
+			case TQuestionDouble: "??";
     		case TComma: ",";
     		case TSemicolon: ";";
     		case TBkOpen: "[";
