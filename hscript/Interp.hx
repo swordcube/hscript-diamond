@@ -507,7 +507,7 @@ class Interp {
 
 				if (((args == null) ? 0 : args.length) != params.length) {
 					if (args.length < minParams) {
-						var str = "Invalid number of parameters. Got " + args.length + ", required " + minParams;
+						var str = "Invalid number of parameters. Required " + args.length + ", got " + minParams;
 						if (name != null)
 							str += " for function '" + name + "'";
 						error(ECustom(str));
